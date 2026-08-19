@@ -1,0 +1,5 @@
+bucket         = "CHANGEME-pr-review-bot-tfstate"
+key            = "pr-review-bot/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "CHANGEME-pr-review-bot-tflock"
+encrypt        = true
