@@ -2,15 +2,22 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 
 from checks import format_checklist, run_checks
 from github_client import get_pr_files, post_comment
 from guardrails import DISABLED_MESSAGE, claim_review_slot, reviews_enabled
-from reviewer import review_diff
+from reviewer import ReviewUnavailable, review_diff
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL") or "the repository maintainer"
 RELEVANT_ACTIONS = {"opened", "reopened", "synchronize"}
+
+UNEXPECTED_ERROR_MESSAGE = (
+    "AI review failed unexpectedly (will investigate). Static checks below are "
+    f"still valid. Questions? Contact {CONTACT_EMAIL}."
+)
 
 
 def _verify_signature(body: bytes, signature: str) -> bool:
@@ -52,7 +59,20 @@ def handler(event, context):
         if skip_reason:
             summary = f"## Summary\n_{skip_reason}_"
         else:
-            summary = review_diff(files, pr_title, pr.get("body") or "", repo_full_name, pr_number)
+            # Top-level guard around the AI review call specifically: a classified
+            # failure gets its exact reason; anything unclassified (timeout,
+            # malformed response, anything unforeseen) still degrades to a comment
+            # instead of crashing the invocation - static checks always post either way.
+            try:
+                summary = review_diff(files, pr_title, pr.get("body") or "", repo_full_name, pr_number)
+            except ReviewUnavailable as e:
+                logging.warning(
+                    "AI review unavailable repo=%s pr=%s detail=%s", repo_full_name, pr_number, e.log_detail
+                )
+                summary = f"## Summary\n_{e.message}_"
+            except Exception:
+                logging.exception("unexpected AI review failure repo=%s pr=%s", repo_full_name, pr_number)
+                summary = f"## Summary\n_{UNEXPECTED_ERROR_MESSAGE}_"
 
     lines = [f"PR Review Bot: review for #{pr_number} ({pr_title})", ""]
     lines.append(

@@ -21,6 +21,7 @@ jobs:
       TF_VAR_daily_call_limit: ${{ vars.DAILY_CALL_LIMIT }}
       TF_VAR_per_repo_hourly_limit: ${{ vars.PER_REPO_HOURLY_LIMIT }}
       TF_VAR_debounce_window_seconds: ${{ vars.DEBOUNCE_WINDOW_SECONDS }}
+      TF_VAR_contact_email: ${{ vars.CONTACT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
 

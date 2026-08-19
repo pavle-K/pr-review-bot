@@ -50,6 +50,8 @@ resource "aws_lambda_function" "webhook" {
       DAILY_CALL_LIMIT        = var.daily_call_limit != "" ? var.daily_call_limit : "50"
       PER_REPO_HOURLY_LIMIT   = var.per_repo_hourly_limit != "" ? var.per_repo_hourly_limit : "10"
       DEBOUNCE_WINDOW_SECONDS = var.debounce_window_seconds != "" ? var.debounce_window_seconds : "120"
+
+      CONTACT_EMAIL = var.contact_email
     }
   }
 }

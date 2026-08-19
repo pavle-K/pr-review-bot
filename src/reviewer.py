@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 
 # No tokenizer available (stdlib only) - a flat chars-per-token ratio is a rough but
@@ -12,6 +13,24 @@ REQUEST_TIMEOUT = 15
 
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5"
 OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-chat"
+
+AUTH_MESSAGE = "AI review unavailable: API key not configured."
+BILLING_MESSAGE = "AI review unavailable: account balance/quota issue. Static checks below are still valid."
+# Best-effort: providers don't all use the same status code for a billing/quota
+# problem (OpenRouter documents 402; Anthropic has historically used 400 with a
+# message about credit balance), so 400 responses are also keyword-sniffed rather
+# than assumed to be a plain bad request.
+BILLING_KEYWORDS = ("credit balance", "insufficient", "billing", "quota", "payment")
+
+
+class ReviewUnavailable(Exception):
+    """A classified AI-review failure. `message` is the exact, PR-comment-safe text
+    to show - never raw error/exception text. `log_detail` is for CloudWatch only."""
+
+    def __init__(self, message: str, log_detail: str = ""):
+        self.message = message
+        self.log_detail = log_detail
+        super().__init__(message)
 
 LOCKFILE_NAMES = {
     "package-lock.json",
@@ -148,6 +167,43 @@ def _build_prompt(included: list, excluded: list, pr_title: str, pr_body: str) -
     )
 
 
+def _classify_http_error(e: urllib.error.HTTPError):
+    """Returns a ReviewUnavailable for the failure modes we distinguish (auth, rate
+    limit, billing), or None if the error doesn't match one - callers re-raise the
+    original HTTPError as-is in that case, to be handled as an unexpected failure."""
+    try:
+        body = e.read().decode(errors="replace")
+    except Exception:
+        body = ""
+    log_detail = f"http {e.code}: {body[:500]}"
+
+    if e.code == 401:
+        return ReviewUnavailable(AUTH_MESSAGE, log_detail)
+    if e.code == 429:
+        retry_after = e.headers.get("Retry-After") if e.headers else None
+        message = (
+            f"AI review skipped: rate limit reached. Will retry after {retry_after}s, or on next push."
+            if retry_after
+            else "AI review skipped: rate limit reached. Will retry on next push."
+        )
+        return ReviewUnavailable(message, log_detail)
+    if e.code == 402 or (e.code == 400 and any(k in body.lower() for k in BILLING_KEYWORDS)):
+        return ReviewUnavailable(BILLING_MESSAGE, log_detail)
+    return None
+
+
+def _post_json(url: str, body: bytes, headers: dict) -> dict:
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        classified = _classify_http_error(e)
+        if classified:
+            raise classified from e
+        raise
+
+
 def _call_anthropic(prompt: str) -> str:
     api_key = os.environ["ANTHROPIC_API_KEY"]
     model = os.environ.get("ANTHROPIC_MODEL", ANTHROPIC_MODEL_DEFAULT)
@@ -159,18 +215,15 @@ def _call_anthropic(prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
         }
     ).encode()
-    req = urllib.request.Request(
+    payload = _post_json(
         "https://api.anthropic.com/v1/messages",
-        data=body,
-        method="POST",
-        headers={
+        body,
+        {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        payload = json.loads(resp.read())
     return "".join(block.get("text", "") for block in payload["content"])
 
 
@@ -187,17 +240,14 @@ def _call_openrouter(prompt: str) -> str:
             ],
         }
     ).encode()
-    req = urllib.request.Request(
+    payload = _post_json(
         "https://openrouter.ai/api/v1/chat/completions",
-        data=body,
-        method="POST",
-        headers={
+        body,
+        {
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        payload = json.loads(resp.read())
     return payload["choices"][0]["message"]["content"]
 
 
@@ -211,10 +261,14 @@ def _select_provider():
 
 
 def review_diff(files: list, pr_title: str, pr_body: str, repo_full_name: str, pr_number: int):
-    """LLM review summary, or None if there's nothing reviewable, no provider is
-    configured, or the call fails. Callers must treat None as 'omit the summary
-    section', never as fatal. repo_full_name/pr_number are only used for the
-    cost-visibility log line below, not sent to the provider."""
+    """LLM review summary, or None if there's nothing reviewable in the diff at all
+    (not an error - just nothing to say). Raises ReviewUnavailable for a classified
+    failure (missing key, rate limit, billing) with a PR-comment-safe message; any
+    other exception (timeout, malformed response, etc.) propagates as-is and is the
+    caller's responsibility to turn into a generic "unexpected failure" message -
+    this function never silently swallows a real failure into a fake result.
+    repo_full_name/pr_number are only used for the cost-visibility log line, not sent
+    to the provider."""
     included, excluded = _select_files(files)
     if not included:
         if excluded:
@@ -226,7 +280,7 @@ def review_diff(files: list, pr_title: str, pr_body: str, repo_full_name: str, p
 
     call = _select_provider()
     if call is None:
-        return None
+        raise ReviewUnavailable(AUTH_MESSAGE, "no ANTHROPIC_API_KEY or OPENROUTER_API_KEY configured")
 
     prompt = _build_prompt(included, excluded, pr_title, pr_body)
     print(
@@ -234,7 +288,4 @@ def review_diff(files: list, pr_title: str, pr_body: str, repo_full_name: str, p
         f"files_included={len(included)} files_excluded={len(excluded)} "
         f"approx_input_tokens={_estimate_tokens(prompt)}"
     )
-    try:
-        return call(prompt).strip()
-    except (OSError, ValueError, KeyError, IndexError):
-        return None
+    return call(prompt).strip()

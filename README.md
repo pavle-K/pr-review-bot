@@ -68,7 +68,8 @@ checked in this order, entirely before any provider is called:
    `src/guardrails.py`), so concurrent webhook deliveries can't race past a limit and
    budget is only ever spent on calls that actually proceed. Whichever guardrail blocks
    the call, the static checks still post with a one-line note instead of the summary
-   (e.g. "AI review skipped: daily limit reached, will resume tomorrow.").
+   (e.g. "AI review skipped: daily review budget reached, resets 2026-08-20 00:00
+   UTC.").
 
 All three thresholds are named constants at the top of `src/guardrails.py`, and
 env-overridable without touching code: `DAILY_CALL_LIMIT` (default 50/day),
@@ -82,6 +83,26 @@ via DynamoDB TTL, so there's no cron/reset job; a new date or hour key just star
 zero. Every successful LLM call also logs its estimated input token count, included/
 excluded file counts, and the repo/PR to CloudWatch, so cost is traceable after the
 fact even though nothing here enforces a dollar cap directly.
+
+**Graceful degradation on AI-call failure.** Static checks and the LLM review are
+fully independent code paths - the checklist always posts, regardless of what happens
+to the summary. A failed AI call is classified into a specific, human-readable reason
+instead of a generic error or a silent gap in the comment:
+
+| Cause | Comment text |
+|---|---|
+| No provider configured, or the API returns 401 | "AI review unavailable: API key not configured." |
+| 429 rate limited | "AI review skipped: rate limit reached. Will retry after `<n>`s, or on next push." (includes the API's `Retry-After` value when present) |
+| Billing/quota error (402, or a 400 whose message mentions balance/quota/billing) | "AI review unavailable: account balance/quota issue. Static checks below are still valid." |
+| Daily budget ceiling (guardrail, see above) | "AI review skipped: daily review budget reached, resets `<UTC time>`." |
+| Timeout or any other unclassified failure | "AI review failed unexpectedly (will investigate). Static checks below are still valid. Questions? Contact `CONTACT_EMAIL`." |
+
+Only the last case includes a contact line - the others already explain the fix or
+wait time on their own. The real exception/HTTP status is always logged to CloudWatch,
+never included in the public PR comment (no raw error text, no partial API keys). The
+Lambda handler wraps the AI review call in its own top-level exception handler, so an
+unhandled/unforeseen exception there degrades to the last row above rather than
+crashing the whole webhook invocation and posting nothing.
 
 ## Repository layout
 
@@ -120,6 +141,8 @@ fact even though nothing here enforces a dollar cap directly.
 - An API key for **one** LLM provider: an Anthropic API key, or an OpenRouter API key
   (openrouter.ai) if you want a cheaper open-weight model instead. Neither is required
   for the bot to work; without one it just skips the summary section.
+- (Optional) a contact email for `CONTACT_EMAIL` - only ever shown in the one
+  "AI review failed unexpectedly" comment case; a generic phrase is used if unset.
 - Terraform >= 1.5.0 installed locally if you want to plan/apply by hand
   (`brew install terraform` on macOS)
 
@@ -149,6 +172,8 @@ Set these repository secrets:
   secret unset). Optionally `ANTHROPIC_MODEL` / `OPENROUTER_MODEL` to override the
   default model for whichever provider you chose.
 
+Optionally set the repository *variable* (not secret) `CONTACT_EMAIL`.
+
 Push to `main` and the workflow runs `terraform init/plan/apply` automatically, reading
 the S3 backend bucket/region hardcoded in `main.tf`.
 
@@ -176,8 +201,12 @@ In the scratch/test repo you're using: Settings -> Webhooks -> Add webhook.
    PR description doesn't match what the diff actually does.
 4. Confirm the fallback path: temporarily set the configured provider's API key to
    something invalid in AWS (or unset it), open a PR, and confirm the comment still
-   posts with the static checks intact and the summary section explaining it's
-   unavailable, rather than the webhook failing outright.
+   posts with the static checks intact and the summary reads "AI review unavailable:
+   API key not configured." rather than the webhook failing outright. If you want to
+   see the "failed unexpectedly" path specifically (with the `CONTACT_EMAIL` line),
+   temporarily break something else about the call - e.g. point `ANTHROPIC_MODEL` at
+   a nonexistent model ID - and confirm that message and contact line appear instead,
+   with the real error visible in CloudWatch Logs but not in the PR comment.
 5. In the repo's webhook settings, check the "Recent Deliveries" tab for a `200`
    response on that delivery.
 6. To confirm the signature check actually works, temporarily change the webhook's

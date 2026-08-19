@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 from botocore.exceptions import ClientError
@@ -19,13 +19,20 @@ DEBOUNCE_TTL_SECONDS = 7 * 24 * 3600
 TABLE_NAME = os.environ.get("GUARDRAILS_TABLE", "pr-review-bot-state")
 KILL_SWITCH_PK = "config#ai_reviews_enabled"
 
-DAILY_LIMIT_MESSAGE = "AI review skipped: daily limit reached, will resume tomorrow."
 REPO_LIMIT_MESSAGE = "AI review skipped: this repo's hourly review limit reached, will resume next hour."
 DEBOUNCE_MESSAGE = "AI review skipped: reviewed recently, will re-run on a later push if changes continue."
 INFRA_FAILURE_MESSAGE = "AI review skipped: budget check unavailable, skipping this run."
 DISABLED_MESSAGE = "AI review skipped: reviews are currently disabled."
 
 _dynamodb = boto3.client("dynamodb")
+
+
+def _daily_limit_message() -> str:
+    """The daily counter is keyed by UTC date, so it resets at the next UTC
+    midnight - compute that instead of hardcoding a vague 'tomorrow'."""
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    reset_at = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+    return f"AI review skipped: daily review budget reached, resets {reset_at.strftime('%Y-%m-%d %H:%M UTC')}."
 
 
 def reviews_enabled() -> bool:
@@ -114,7 +121,7 @@ def claim_review_slot(repo_full_name: str, pr_number: int, commit_sha: str):
         if e.response["Error"]["Code"] != "TransactionCanceledException":
             return INFRA_FAILURE_MESSAGE
         reasons = e.response.get("CancellationReasons", [])
-        labels = [DAILY_LIMIT_MESSAGE, REPO_LIMIT_MESSAGE, DEBOUNCE_MESSAGE]
+        labels = [_daily_limit_message(), REPO_LIMIT_MESSAGE, DEBOUNCE_MESSAGE]
         for reason, label in zip(reasons, labels):
             if reason.get("Code") == "ConditionalCheckFailed":
                 return label

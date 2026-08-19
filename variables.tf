@@ -66,3 +66,9 @@ variable "debounce_window_seconds" {
   type        = string
   default     = "120"
 }
+
+variable "contact_email" {
+  description = "Contact address shown in the PR comment when the AI review fails unexpectedly. Not sensitive - just a display string; unset falls back to a generic phrase."
+  type        = string
+  default     = ""
+}
