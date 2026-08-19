@@ -1,0 +1,3 @@
+bucket = "CHANGEME-pr-review-bot-tfstate"
+key    = "pr-review-bot/terraform.tfstate"
+region = "us-east-1"

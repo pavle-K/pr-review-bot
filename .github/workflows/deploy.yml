@@ -22,13 +22,21 @@ jobs:
       TF_VAR_per_repo_hourly_limit: ${{ vars.PER_REPO_HOURLY_LIMIT }}
       TF_VAR_debounce_window_seconds: ${{ vars.DEBOUNCE_WINDOW_SECONDS }}
       TF_VAR_contact_email: ${{ vars.CONTACT_EMAIL }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        run: terraform init
+        # TF_STATE_BUCKET must exist already (Terraform can't create the bucket it
+        # stores its own state in) and must be set as a repo secret before the first
+        # run, or this fails with "bucket cannot be empty" - see README.
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=pr-review-bot/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
 
       - name: Terraform Plan
         run: terraform plan
