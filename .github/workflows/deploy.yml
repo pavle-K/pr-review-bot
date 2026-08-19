@@ -31,7 +31,7 @@ jobs:
           terraform init \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="key=pr-review-bot/terraform.tfstate" \
-            -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
+            -backend-config="region=${{ vars.AWS_REGION }}"
 
       - name: Terraform Plan
         run: terraform plan
