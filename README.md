@@ -137,7 +137,7 @@ crashing the whole webhook invocation and posting nothing.
   **not** hardcoded in `main.tf` (S3 bucket names are globally unique, so there's no
   one value to commit to a public repo) - supply them yourself, either via
   `backend.hcl` locally (copy `backend.hcl.example`, gitignored) or via the
-  `TF_STATE_BUCKET` secret + `AWS_REGION` variable in CI, see below. (Unrelated: the
+  `TF_STATE_BUCKET` / `AWS_REGION` variables in CI, see below. (Unrelated: the
   bot has its own DynamoDB table for guardrail state, `pr-review-bot-state` in
   `dynamodb.tf` - Terraform creates that one itself, nothing to set up by hand.)
 - A GitHub PAT with `Pull requests: read and write` scoped to the test repo you'll use
@@ -169,21 +169,29 @@ Note the `webhook_url` output at the end; that's the payload URL for the next st
 
 ### Via GitHub Actions
 
-Set these repository secrets:
+Secrets and variables are two separate tabs under the same Settings page (Settings >
+Secrets and variables > Actions), and the workflow reads them from two separate
+namespaces (`secrets.X` vs `vars.X`) that never fall back to each other - a value
+saved in the wrong tab isn't found, doesn't error, and silently falls back to
+whatever default the code has (or an empty string, if there isn't one). Secrets are
+encrypted and write-only after saving (masked in logs); variables are plain text,
+for anything not actually sensitive.
+
+Set these repository secrets (Settings > Secrets and variables > Actions > Secrets):
 
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- `TF_STATE_BUCKET` - the bucket from Prerequisites. **Required** - if this is unset,
-  `terraform init` fails immediately with "bucket cannot be empty" (an empty secret
-  still gets passed as an empty string, not skipped).
 - `WEBHOOK_SECRET`
 - `BOT_GITHUB_TOKEN`
 - `ANTHROPIC_API_KEY` **or** `OPENROUTER_API_KEY` (only set one; leave the other repo
   secret unset). Optionally `ANTHROPIC_MODEL` / `OPENROUTER_MODEL` to override the
   default model for whichever provider you chose.
 
-Set these repository *variables* (Settings > Secrets and variables > Actions >
-Variables - not secrets, these aren't sensitive):
+Set these repository variables (same page, Variables tab - not secrets, none of these
+are sensitive):
 
+- `TF_STATE_BUCKET` - the bucket from Prerequisites. **Required** - if this is unset,
+  `terraform init` fails immediately with "bucket cannot be empty" (an empty variable
+  still gets passed as an empty string, not skipped).
 - `AWS_REGION` - controls both where Terraform state lives and where the actual
   resources deploy (defaults to `us-east-1` if unset). Keeping these in sync is the
   whole reason this is one variable instead of two.
