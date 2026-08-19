@@ -32,9 +32,12 @@ each changed file is scored (path risk keywords like `auth`/`payment`/`migration
 score highest, then churn, discounted for whitespace/import-only changes) and files are
 packed whole, highest-scoring first, into a fixed token budget. Lockfiles, `dist/`,
 `build/`, `node_modules/`, minified, and binary/image files are filtered out entirely
-before scoring. Any file that doesn't fit is named explicitly, both in the prompt (so
-the model never claims something is "missing" just because it wasn't shown) and in the
-final comment under "Not reviewed (diff too large for single pass)".
+before scoring. Files that don't fit are passed to the model as a filename-only list
+(no content) alongside the ones it *was* shown, and the model itself groups them into a
+few human-readable categories with counts for a `## Scope` section in its response
+(e.g. "6 UI components, 3 pages, 2 tests") - it categorizes by whatever it actually
+observes in the paths for that PR, not a hardcoded taxonomy, so this works the same way
+whether the repo is a JS frontend, a Python backend, a Rust CLI, or anything else.
 
 **LLM provider is picked automatically from whichever API key secret is set**, no code
 change needed to switch:
@@ -50,6 +53,36 @@ change needed to switch:
 Both calls are plain `urllib.request` HTTPS calls, no SDK, consistent with the rest of
 the project's dependency-free approach.
 
+**Volume/abuse guardrails on the LLM step.** The static checks always run and always
+post; these guardrails only gate the optional LLM call, so a webhook never fails or
+goes silent because of them. Backed by one DynamoDB table (`pr-review-bot-state`),
+checked in this order, entirely before any provider is called:
+
+1. **Kill switch** - a DynamoDB item (`pk = config#ai_reviews_enabled`, attribute
+   `enabled` boolean). Flip it to instantly disable all LLM reviews without a
+   redeploy: `aws dynamodb put-item --table-name pr-review-bot-state --item '{"pk":
+   {"S":"config#ai_reviews_enabled"},"enabled":{"BOOL":false}}'`. Missing item means
+   enabled (fail-open), so a fresh deploy isn't silently disabled.
+2. **Daily global cap, per-repo hourly cap, and per-PR debounce** - checked and
+   reserved together in a single atomic DynamoDB transaction (`claim_review_slot` in
+   `src/guardrails.py`), so concurrent webhook deliveries can't race past a limit and
+   budget is only ever spent on calls that actually proceed. Whichever guardrail blocks
+   the call, the static checks still post with a one-line note instead of the summary
+   (e.g. "AI review skipped: daily limit reached, will resume tomorrow.").
+
+All three thresholds are named constants at the top of `src/guardrails.py`, and
+env-overridable without touching code: `DAILY_CALL_LIMIT` (default 50/day),
+`PER_REPO_HOURLY_LIMIT` (default 10/hour/repo), `DEBOUNCE_WINDOW_SECONDS` (default
+120s - a burst of pushes to the same PR only triggers one review per window, not one
+per push). Tune them via the `daily_call_limit` / `per_repo_hourly_limit` /
+`debounce_window_seconds` Terraform variables, or the matching `DAILY_CALL_LIMIT` /
+`PER_REPO_HOURLY_LIMIT` / `DEBOUNCE_WINDOW_SECONDS` GitHub Actions repository
+*variables* (not secrets - these aren't sensitive). Counter items expire automatically
+via DynamoDB TTL, so there's no cron/reset job; a new date or hour key just starts at
+zero. Every successful LLM call also logs its estimated input token count, included/
+excluded file counts, and the repo/PR to CloudWatch, so cost is traceable after the
+fact even though nothing here enforces a dollar cap directly.
+
 ## Repository layout
 
 ```
@@ -59,10 +92,12 @@ the project's dependency-free approach.
 │   ├── index.py                   Lambda handler: verify signature, route event
 │   ├── github_client.py           GitHub API: fetch PR files, post PR comment
 │   ├── checks.py                  Static checks: secrets, missing tests, diff size
-│   └── reviewer.py                LLM review: Anthropic or OpenRouter, picked by env
+│   ├── reviewer.py                LLM review: Anthropic or OpenRouter, picked by env
+│   └── guardrails.py              Volume/abuse guardrails: kill switch, budget caps
 ├── main.tf                        Provider + S3 backend config (state, native locking)
 ├── variables.tf                   aws_region, webhook_secret, github_token, LLM keys
 ├── lambda.tf                      Lambda function, IAM role, zipped from src/
+├── dynamodb.tf                    Guardrails state table + scoped IAM policy
 ├── api.tf                         API Gateway v2 HTTP API, route, integration
 ├── outputs.tf                     webhook_url output
 └── .gitignore
@@ -74,9 +109,11 @@ the project's dependency-free approach.
   resources
 - An S3 bucket for Terraform remote state, created and versioned manually before the
   first `terraform init` (Terraform can't create the bucket it stores its own state
-  in). State locking uses S3's native lockfile (`use_lockfile = true` in `main.tf`),
-  so no separate DynamoDB table is needed. The bucket name is hardcoded in `main.tf`;
-  update it there if you're using your own bucket.
+  in). State locking uses S3's native lockfile (`use_lockfile = true` in `main.tf`), so
+  no DynamoDB table is needed for Terraform's own state; the bucket name is hardcoded
+  in `main.tf`, update it there if you're using your own bucket. (Unrelated: the bot
+  has its own DynamoDB table for guardrail state, `pr-review-bot-state` in
+  `dynamodb.tf` - Terraform creates that one itself, nothing to set up by hand.)
 - A GitHub PAT with `Pull requests: read and write` scoped to the test repo you'll use
   (this becomes `GITHUB_TOKEN` / the `BOT_GITHUB_TOKEN` secret)
 - A webhook secret you generate yourself, e.g. `openssl rand -hex 32`
@@ -148,6 +185,20 @@ In the scratch/test repo you're using: Settings -> Webhooks -> Add webhook.
    another PR, and confirm: the delivery shows a `401`, CloudWatch Logs for the Lambda
    show `signature verification failed`, and no comment is posted. Then set the webhook
    secret back to the correct value.
+7. Confirm the kill switch: `put-item` the `config#ai_reviews_enabled` flag to
+   `false` (see above), open a PR, and confirm the comment posts with the static
+   checks intact and the summary section says reviews are disabled. Set it back
+   (`put-item` with `{"BOOL":true}` or just delete the item) afterward.
+8. Confirm debounce: push two commits to the same open PR within
+   `DEBOUNCE_WINDOW_SECONDS` (120s by default) of each other, and confirm the second
+   `synchronize` event's comment shows the debounce note instead of a fresh summary.
+9. Confirm the daily/per-repo caps if you want to exercise them: temporarily lower
+   `DAILY_CALL_LIMIT` or `PER_REPO_HOURLY_LIMIT` in `src/guardrails.py` to something
+   small, redeploy, trigger that many reviews, and confirm the next one is skipped
+   with the matching note. Put the thresholds back afterward.
+10. Check CloudWatch Logs for the `llm_review_call` line on a successful review -
+    confirms cost visibility is working (repo, PR number, included/excluded file
+    counts, approximate input tokens).
 
 CloudWatch Logs group: `/aws/lambda/pr-review-bot`.
 
@@ -159,4 +210,6 @@ CloudWatch Logs group: `/aws/lambda/pr-review-bot`.
   missing tests, diff size), posting the results as a checklist comment.
 - **Stage 3 (current):** adds an LLM-generated summary of the diff (provider picked
   automatically by which API key is configured), combined with the Stage 2 checklist
-  into one comment. Degrades gracefully if the LLM call fails or isn't configured.
+  into one comment. Degrades gracefully if the LLM call fails or isn't configured, and
+  is gated by volume/abuse guardrails (kill switch, daily/per-repo/debounce limits) so
+  the LLM step can't be run away with by a busy or hostile repo.

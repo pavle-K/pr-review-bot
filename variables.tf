@@ -44,3 +44,25 @@ variable "openrouter_model" {
   type        = string
   default     = "deepseek/deepseek-chat"
 }
+
+# Volume/abuse guardrail thresholds - string-typed (not number) so an unset CI secret
+# resolves to an empty string that coalesces cleanly to the default in lambda.tf,
+# rather than a hard type-conversion failure on an empty number.
+
+variable "daily_call_limit" {
+  description = "Max LLM review calls allowed per day, globally"
+  type        = string
+  default     = "50"
+}
+
+variable "per_repo_hourly_limit" {
+  description = "Max LLM review calls allowed per hour, per repo"
+  type        = string
+  default     = "10"
+}
+
+variable "debounce_window_seconds" {
+  description = "Seconds after a review before a new push to the same PR triggers another one"
+  type        = string
+  default     = "120"
+}

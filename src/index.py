@@ -6,6 +6,7 @@ import os
 
 from checks import format_checklist, run_checks
 from github_client import get_pr_files, post_comment
+from guardrails import DISABLED_MESSAGE, claim_review_slot, reviews_enabled
 from reviewer import review_diff
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
@@ -39,10 +40,19 @@ def handler(event, context):
     repo_full_name = payload["repository"]["full_name"]
     pr_number = pr["number"]
     pr_title = pr["title"]
+    commit_sha = pr["head"]["sha"]
 
     files = get_pr_files(repo_full_name, pr_number)
     results = run_checks(files)
-    summary = review_diff(files, pr_title, pr.get("body") or "")
+
+    if not reviews_enabled():
+        summary = f"## Summary\n_{DISABLED_MESSAGE}_"
+    else:
+        skip_reason = claim_review_slot(repo_full_name, pr_number, commit_sha)
+        if skip_reason:
+            summary = f"## Summary\n_{skip_reason}_"
+        else:
+            summary = review_diff(files, pr_title, pr.get("body") or "", repo_full_name, pr_number)
 
     lines = [f"PR Review Bot: review for #{pr_number} ({pr_title})", ""]
     lines.append(

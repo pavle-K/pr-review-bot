@@ -210,10 +210,11 @@ def _select_provider():
     return None
 
 
-def review_diff(files: list, pr_title: str, pr_body: str):
+def review_diff(files: list, pr_title: str, pr_body: str, repo_full_name: str, pr_number: int):
     """LLM review summary, or None if there's nothing reviewable, no provider is
     configured, or the call fails. Callers must treat None as 'omit the summary
-    section', never as fatal."""
+    section', never as fatal. repo_full_name/pr_number are only used for the
+    cost-visibility log line below, not sent to the provider."""
     included, excluded = _select_files(files)
     if not included:
         if excluded:
@@ -228,6 +229,11 @@ def review_diff(files: list, pr_title: str, pr_body: str):
         return None
 
     prompt = _build_prompt(included, excluded, pr_title, pr_body)
+    print(
+        f"llm_review_call repo={repo_full_name} pr={pr_number} "
+        f"files_included={len(included)} files_excluded={len(excluded)} "
+        f"approx_input_tokens={_estimate_tokens(prompt)}"
+    )
     try:
         return call(prompt).strip()
     except (OSError, ValueError, KeyError, IndexError):

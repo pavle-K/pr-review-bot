@@ -45,6 +45,11 @@ resource "aws_lambda_function" "webhook" {
       ANTHROPIC_MODEL    = var.anthropic_model != "" ? var.anthropic_model : "claude-haiku-4-5"
       OPENROUTER_API_KEY = var.openrouter_api_key
       OPENROUTER_MODEL   = var.openrouter_model != "" ? var.openrouter_model : "deepseek/deepseek-chat"
+      GUARDRAILS_TABLE   = aws_dynamodb_table.guardrails.name
+
+      DAILY_CALL_LIMIT        = var.daily_call_limit != "" ? var.daily_call_limit : "50"
+      PER_REPO_HOURLY_LIMIT   = var.per_repo_hourly_limit != "" ? var.per_repo_hourly_limit : "10"
+      DEBOUNCE_WINDOW_SECONDS = var.debounce_window_seconds != "" ? var.debounce_window_seconds : "120"
     }
   }
 }
