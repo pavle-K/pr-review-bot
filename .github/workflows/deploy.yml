@@ -12,6 +12,10 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
       TF_VAR_github_token: ${{ secrets.BOT_GITHUB_TOKEN }}
+      TF_VAR_anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      TF_VAR_anthropic_model: ${{ secrets.ANTHROPIC_MODEL }}
+      TF_VAR_openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+      TF_VAR_openrouter_model: ${{ secrets.OPENROUTER_MODEL }}
     steps:
       - uses: actions/checkout@v4
 

@@ -4,8 +4,9 @@ import hmac
 import json
 import os
 
-from checks import format_comment, run_checks
+from checks import format_checklist, run_checks
 from github_client import get_pr_files, post_comment
+from reviewer import review_diff
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 RELEVANT_ACTIONS = {"opened", "reopened", "synchronize"}
@@ -41,6 +42,12 @@ def handler(event, context):
 
     files = get_pr_files(repo_full_name, pr_number)
     results = run_checks(files)
-    post_comment(repo_full_name, pr_number, format_comment(results, pr_number, pr_title))
+    summary = review_diff(files, pr_title, pr.get("body") or "")
+
+    lines = [f"PR Review Bot: review for #{pr_number} ({pr_title})", "", "## Summary"]
+    lines.append(summary or "_LLM summary unavailable (no provider configured, or the request failed)._")
+    lines.append("")
+    lines.append(format_checklist(results))
+    post_comment(repo_full_name, pr_number, "\n".join(lines))
 
     return {"statusCode": 200, "body": "ok"}

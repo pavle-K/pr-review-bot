@@ -87,8 +87,8 @@ def run_checks(files: list) -> list:
     return [check_secrets(files), check_tests(files), check_diff_size(files)]
 
 
-def format_comment(results: list, pr_number: int, pr_title: str) -> str:
-    lines = [f"PR Review Bot: static checks for #{pr_number} ({pr_title})", ""]
+def format_checklist(results: list) -> str:
+    lines = ["## Static checks"]
     for r in results:
         mark = "✅" if r["passed"] else "⚠️"
         lines.append(f"{mark} {r['name']}: {r['detail']}")
