@@ -1,7 +1,6 @@
 # Terraform
 .terraform/
 .terraform.lock.hcl
-backend.hcl
 *.tfstate
 *.tfstate.*
 crash.log

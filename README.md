@@ -28,12 +28,11 @@ yet fetch diffs, run checks, or call an LLM; that lands in later stages.
 ├── src/
 │   ├── index.py                   Lambda handler: verify signature, route event
 │   └── github_client.py           GitHub API: post PR comment
-├── main.tf                        Provider + partial S3 backend config
+├── main.tf                        Provider + S3 backend config (state, native locking)
 ├── variables.tf                   aws_region, webhook_secret, github_token
 ├── lambda.tf                      Lambda function, IAM role, zipped from src/
 ├── api.tf                         API Gateway v2 HTTP API, route, integration
 ├── outputs.tf                     webhook_url output
-├── backend.hcl.example             Template for local backend config
 └── .gitignore
 ```
 
@@ -41,10 +40,11 @@ yet fetch diffs, run checks, or call an LLM; that lands in later stages.
 
 - AWS account and credentials with permission to create Lambda, API Gateway, and IAM
   resources
-- An S3 bucket and a DynamoDB table for Terraform remote state, created before the
-  first `terraform init` (Terraform will not create its own backend). Copy
-  `backend.hcl.example` to `backend.hcl` and fill in real names; `backend.hcl` is
-  gitignored since bucket/table names are account-specific.
+- An S3 bucket for Terraform remote state, created and versioned manually before the
+  first `terraform init` (Terraform can't create the bucket it stores its own state
+  in). State locking uses S3's native lockfile (`use_lockfile = true` in `main.tf`),
+  so no separate DynamoDB table is needed. The bucket name is hardcoded in `main.tf`;
+  update it there if you're using your own bucket.
 - A GitHub PAT with `Pull requests: read and write` scoped to the test repo you'll use
   (this becomes `GITHUB_TOKEN` / the `BOT_GITHUB_TOKEN` secret)
 - A webhook secret you generate yourself, e.g. `openssl rand -hex 32`
@@ -56,8 +56,7 @@ yet fetch diffs, run checks, or call an LLM; that lands in later stages.
 ### Locally
 
 ```
-cp backend.hcl.example backend.hcl   # then edit bucket/dynamodb_table to real names
-terraform init -backend-config=backend.hcl
+terraform init
 terraform validate
 terraform plan  -var="webhook_secret=<your secret>" -var="github_token=<your PAT>"
 terraform apply -var="webhook_secret=<your secret>" -var="github_token=<your PAT>"
@@ -70,13 +69,11 @@ Note the `webhook_url` output at the end; that's the payload URL for the next st
 Set these repository secrets:
 
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- `TF_STATE_BUCKET`, `TF_STATE_LOCK_TABLE` (the backend resources from Prerequisites)
 - `WEBHOOK_SECRET`
 - `BOT_GITHUB_TOKEN`
 
-Optionally set the repository variable `AWS_REGION` (defaults to `us-east-1`).
-
-Push to `main` and the workflow runs `terraform init/plan/apply` automatically.
+Push to `main` and the workflow runs `terraform init/plan/apply` automatically, reading
+the S3 backend bucket/region hardcoded in `main.tf`.
 
 ## Registering the webhook
 

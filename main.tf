@@ -12,10 +12,15 @@ terraform {
     }
   }
 
-  # Partial backend config: bucket/key/region/dynamodb_table are supplied at
-  # init time via -backend-config (see backend.hcl.example). You must create
-  # the S3 bucket and DynamoDB lock table yourself before the first init.
-  backend "s3" {}
+  # State bucket is created and versioned manually (Terraform can't create the
+  # bucket it stores its own state in). Locking uses S3's native lockfile, no
+  # separate DynamoDB table.
+  backend "s3" {
+    bucket       = "pavlek-pr-review-bot-tfstate"
+    key          = "pr-review-bot/terraform.tfstate"
+    region       = "us-east-1"
+    use_lockfile = true
+  }
 }
 
 provider "aws" {
