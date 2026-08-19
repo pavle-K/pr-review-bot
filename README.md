@@ -121,6 +121,8 @@ crashing the whole webhook invocation and posting nothing.
 ├── dynamodb.tf                    Guardrails state table + scoped IAM policy
 ├── api.tf                         API Gateway v2 HTTP API, route, integration
 ├── outputs.tf                     webhook_url output
+├── backend.hcl.example            Template for local backend config (copy to backend.hcl)
+├── LICENSE
 └── .gitignore
 ```
 
@@ -131,9 +133,12 @@ crashing the whole webhook invocation and posting nothing.
 - An S3 bucket for Terraform remote state, created and versioned manually before the
   first `terraform init` (Terraform can't create the bucket it stores its own state
   in). State locking uses S3's native lockfile (`use_lockfile = true` in `main.tf`), so
-  no DynamoDB table is needed for Terraform's own state; the bucket name is hardcoded
-  in `main.tf`, update it there if you're using your own bucket. (Unrelated: the bot
-  has its own DynamoDB table for guardrail state, `pr-review-bot-state` in
+  no DynamoDB table is needed for Terraform's own state. Bucket name and region are
+  **not** hardcoded in `main.tf` (S3 bucket names are globally unique, so there's no
+  one value to commit to a public repo) - supply them yourself, either via
+  `backend.hcl` locally (copy `backend.hcl.example`, gitignored) or via the
+  `TF_STATE_BUCKET` secret + `AWS_REGION` variable in CI, see below. (Unrelated: the
+  bot has its own DynamoDB table for guardrail state, `pr-review-bot-state` in
   `dynamodb.tf` - Terraform creates that one itself, nothing to set up by hand.)
 - A GitHub PAT with `Pull requests: read and write` scoped to the test repo you'll use
   (this becomes `GITHUB_TOKEN` / the `BOT_GITHUB_TOKEN` secret)
@@ -151,7 +156,8 @@ crashing the whole webhook invocation and posting nothing.
 ### Locally
 
 ```
-terraform init
+cp backend.hcl.example backend.hcl   # then edit bucket (and region, if not us-east-1)
+terraform init -backend-config=backend.hcl
 terraform validate
 terraform plan  -var="webhook_secret=<your secret>" -var="github_token=<your PAT>" \
   -var="anthropic_api_key=<your key>"    # or -var="openrouter_api_key=<your key>"
@@ -166,16 +172,25 @@ Note the `webhook_url` output at the end; that's the payload URL for the next st
 Set these repository secrets:
 
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+- `TF_STATE_BUCKET` - the bucket from Prerequisites. **Required** - if this is unset,
+  `terraform init` fails immediately with "bucket cannot be empty" (an empty secret
+  still gets passed as an empty string, not skipped).
 - `WEBHOOK_SECRET`
 - `BOT_GITHUB_TOKEN`
 - `ANTHROPIC_API_KEY` **or** `OPENROUTER_API_KEY` (only set one; leave the other repo
   secret unset). Optionally `ANTHROPIC_MODEL` / `OPENROUTER_MODEL` to override the
   default model for whichever provider you chose.
 
-Optionally set the repository *variable* (not secret) `CONTACT_EMAIL`.
+Set these repository *variables* (Settings > Secrets and variables > Actions >
+Variables - not secrets, these aren't sensitive):
 
-Push to `main` and the workflow runs `terraform init/plan/apply` automatically, reading
-the S3 backend bucket/region hardcoded in `main.tf`.
+- `AWS_REGION` - controls both where Terraform state lives and where the actual
+  resources deploy (defaults to `us-east-1` if unset). Keeping these in sync is the
+  whole reason this is one variable instead of two.
+- Optionally `CONTACT_EMAIL`, `DAILY_CALL_LIMIT`, `PER_REPO_HOURLY_LIMIT`,
+  `DEBOUNCE_WINDOW_SECONDS`.
+
+Push to `main` and the workflow runs `terraform init/plan/apply` automatically.
 
 ## Registering the webhook
 
