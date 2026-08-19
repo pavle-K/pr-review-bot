@@ -7,7 +7,7 @@ import urllib.request
 # workable estimate for packing decisions; it doesn't need to be exact, just consistent.
 CHARS_PER_TOKEN = 4
 TOKEN_BUDGET = 15000
-MAX_OUTPUT_TOKENS = 800
+MAX_OUTPUT_TOKENS = 900
 REQUEST_TIMEOUT = 15
 
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5"
@@ -42,14 +42,26 @@ IMPORT_LINE_RE = re.compile(r"^\s*(import\s|from\s+\S+\s+import\s|require\()", r
 SYSTEM_PROMPT = (
     "You are reviewing a GitHub pull request diff. You may be shown only a "
     "relevance-ranked subset of the full diff, not every changed file - the request "
-    "will tell you exactly which files are included and which were excluded for size. "
-    "Never claim code is missing, absent, or unimplemented solely because a file "
-    "wasn't shown to you; only comment on files you actually see, and note explicitly "
-    "when a judgment can't be made because a relevant file was excluded. "
-    "Respond in under 250 words using exactly these markdown sections:\n"
+    "will tell you exactly which files are included (full diffs) and which were "
+    "excluded for size (filenames only, no content). Never claim code is missing, "
+    "absent, or unimplemented solely because a file wasn't shown to you; only comment "
+    "on files you actually see, and note explicitly when a judgment can't be made "
+    "because a relevant file was excluded.\n\n"
+    "Respond using exactly these markdown sections, under 300 words total:\n"
     "## Summary\n<plain-English summary of what changed, in the files you were shown>\n"
     "## Risks & Edge Cases\n<risks or edge cases worth a human's attention>\n"
-    "## Alignment with PR Description\n<whether the diff matches what the PR description claims>"
+    "## Alignment with PR Description\n<whether the diff matches what the PR description claims>\n\n"
+    "Include a ## Scope section only if the request lists excluded files; omit it "
+    "entirely otherwise. When included, write exactly two lines:\n"
+    "Reviewed the N highest-risk files (a short comma-separated description of what "
+    "they are or do, based on the diffs you saw, a few words each).\n"
+    "Not individually reviewed due to size: <count> <category>, <count> <category>, ...\n\n"
+    "For that second line, group the excluded filenames into 2-4 categories based on "
+    "what you actually observe in their paths and extensions in THIS diff - do not "
+    "assume any particular language, framework, or project layout; it could be a JS "
+    "frontend, a Python backend, a Rust CLI, mobile code, anything. If there are "
+    "genuinely more than 4 natural categories, collapse the smallest into an \"other\" "
+    "bucket. Report only a count per category, never individual filenames."
 )
 
 
@@ -114,21 +126,25 @@ def _select_files(files: list):
 def _build_prompt(included: list, excluded: list, pr_title: str, pr_body: str) -> str:
     included_names = ", ".join(f["filename"] for f in included)
     total = len(included) + len(excluded)
-    excluded_note = (
-        f"\nFiles NOT shown (excluded for size - do not describe these as missing or "
-        f"unimplemented, just as not reviewed): {', '.join(excluded)}"
-        if excluded
-        else ""
-    )
     diff_text = "\n\n".join(f"--- {f['filename']} ---\n{f['patch']}" for f in included)
+
+    excluded_block = ""
+    if excluded:
+        excluded_block = (
+            f"\n\nThe following {len(excluded)} files were excluded from review for size "
+            f"(filenames only, no diff content - use these only to write the Scope "
+            f"section, never describe them as missing or unimplemented):\n"
+            f"{', '.join(excluded)}"
+        )
+
     return (
         f"PR title: {pr_title}\n"
         f"PR description: {pr_body or '(none)'}\n\n"
-        f"You are shown a relevance-ranked subset of this PR's changed files "
-        f"({len(included)} of {total} changed files), selected by risk and churn, "
-        f"not the full diff.\n"
-        f"Files shown: {included_names}{excluded_note}\n\n"
+        f"You are shown {len(included)} of {total} changed files, selected by risk "
+        f"and churn (full diffs below).\n"
+        f"Files shown: {included_names}\n\n"
         f"Diff:\n{diff_text}"
+        f"{excluded_block}"
     )
 
 
@@ -213,10 +229,6 @@ def review_diff(files: list, pr_title: str, pr_body: str):
 
     prompt = _build_prompt(included, excluded, pr_title, pr_body)
     try:
-        text = call(prompt).strip()
+        return call(prompt).strip()
     except (OSError, ValueError, KeyError, IndexError):
         return None
-
-    if excluded:
-        text += "\n\n**Not reviewed (diff too large for single pass):** " + ", ".join(excluded)
-    return text
