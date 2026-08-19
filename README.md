@@ -10,15 +10,17 @@ Deployed with Terraform, applied via GitHub Actions on every push to `main`.
 
 ```
 GitHub PR event -> webhook POST -> API Gateway (HTTP API) -> Lambda (Python 3.11)
-  -> verify HMAC SHA-256 signature -> post ack comment back to the PR
+  -> verify HMAC SHA-256 signature -> fetch PR files/diff via GitHub API
+  -> run static checks -> post checklist comment back to the PR
 ```
 
 GCP equivalents, for reference: Lambda ~ Cloud Functions, API Gateway v2 (HTTP API) ~
 GCP API Gateway, the Lambda's IAM role ~ a GCP service account.
 
-At this stage the bot only verifies the webhook signature and posts an acknowledgement
-comment confirming the PR number, title, and that the signature checked out. It does not
-yet fetch diffs, run checks, or call an LLM; that lands in later stages.
+At this stage the bot verifies the webhook signature, fetches the PR's changed files,
+and runs a small set of deterministic checks against them: possible committed secrets,
+source files changed with no corresponding test changes, and oversized diffs. Results
+post as a checklist comment. No LLM involvement yet; that lands in a later stage.
 
 ## Repository layout
 
@@ -27,7 +29,8 @@ yet fetch diffs, run checks, or call an LLM; that lands in later stages.
 ├── .github/workflows/deploy.yml   CI: terraform init/plan/apply on push to main
 ├── src/
 │   ├── index.py                   Lambda handler: verify signature, route event
-│   └── github_client.py           GitHub API: post PR comment
+│   ├── github_client.py           GitHub API: fetch PR files, post PR comment
+│   └── checks.py                  Static checks: secrets, missing tests, diff size
 ├── main.tf                        Provider + S3 backend config (state, native locking)
 ├── variables.tf                   aws_region, webhook_secret, github_token
 ├── lambda.tf                      Lambda function, IAM role, zipped from src/
@@ -87,11 +90,16 @@ In the scratch/test repo you're using: Settings -> Webhooks -> Add webhook.
 ## Testing it
 
 1. Open a PR on the test repo (or reopen one, or push a new commit to an open PR).
-   Within a few seconds a comment should appear: `PR Review Bot: signature verified.`
-   followed by the PR number and title.
-2. In the repo's webhook settings, check the "Recent Deliveries" tab for a `200`
+   Within a few seconds a checklist comment should appear, one line per check
+   (secrets, tests, diff size), each marked pass or warn.
+2. To exercise each check in isolation, open PRs designed to trip them individually:
+   one that adds a line looking like a credential (e.g. `api_key = "sk_live_..."`),
+   one that changes a source file with no corresponding test file change, and one with
+   a diff over 500 changed lines. Confirm each posts the matching warning, and a small
+   clean PR (source + matching test file) posts all-clear on every check.
+3. In the repo's webhook settings, check the "Recent Deliveries" tab for a `200`
    response on that delivery.
-3. To confirm the signature check actually works, temporarily change the webhook's
+4. To confirm the signature check actually works, temporarily change the webhook's
    secret in GitHub to something wrong (without touching `WEBHOOK_SECRET` in AWS), open
    another PR, and confirm: the delivery shows a `401`, CloudWatch Logs for the Lambda
    show `signature verification failed`, and no comment is posted. Then set the webhook
@@ -101,5 +109,7 @@ CloudWatch Logs group: `/aws/lambda/pr-review-bot`.
 
 ## Stage notes
 
-- **Stage 1 (current):** signature-verifying webhook receiver that posts an ack
-  comment on `opened` / `reopened` / `synchronize` pull request events.
+- **Stage 1:** signature-verifying webhook receiver that posts an ack comment on
+  `opened` / `reopened` / `synchronize` pull request events.
+- **Stage 2 (current):** fetches the PR's changed files and runs deterministic checks
+  (secrets, missing tests, diff size), posting the results as a checklist comment.

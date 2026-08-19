@@ -4,7 +4,8 @@ import hmac
 import json
 import os
 
-from github_client import post_comment
+from checks import format_comment, run_checks
+from github_client import get_pr_files, post_comment
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 RELEVANT_ACTIONS = {"opened", "reopened", "synchronize"}
@@ -38,11 +39,8 @@ def handler(event, context):
     pr_number = pr["number"]
     pr_title = pr["title"]
 
-    comment_body = (
-        "PR Review Bot: signature verified.\n\n"
-        f"PR #{pr_number}: {pr_title}\n\n"
-        "Static checks and LLM review land in later stages."
-    )
-    post_comment(repo_full_name, pr_number, comment_body)
+    files = get_pr_files(repo_full_name, pr_number)
+    results = run_checks(files)
+    post_comment(repo_full_name, pr_number, format_comment(results, pr_number, pr_title))
 
     return {"statusCode": 200, "body": "ok"}
