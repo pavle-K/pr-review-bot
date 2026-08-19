@@ -18,7 +18,7 @@ terraform {
   backend "s3" {
     bucket       = "pavlek-pr-review-bot-tfstate"
     key          = "pr-review-bot/terraform.tfstate"
-    region       = "us-east-1"
+    region       = "eu-north-1"
     use_lockfile = true
   }
 }
