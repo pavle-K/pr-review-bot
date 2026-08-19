@@ -16,8 +16,6 @@ jobs:
       TF_VAR_anthropic_model: ${{ secrets.ANTHROPIC_MODEL }}
       TF_VAR_openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
       TF_VAR_openrouter_model: ${{ secrets.OPENROUTER_MODEL }}
-      # Not secrets, just tuning knobs - repo variables (Settings > Secrets and
-      # variables > Actions > Variables), not repo secrets.
       TF_VAR_daily_call_limit: ${{ vars.DAILY_CALL_LIMIT }}
       TF_VAR_per_repo_hourly_limit: ${{ vars.PER_REPO_HOURLY_LIMIT }}
       TF_VAR_debounce_window_seconds: ${{ vars.DEBOUNCE_WINDOW_SECONDS }}
@@ -29,9 +27,6 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        # TF_STATE_BUCKET must exist already (Terraform can't create the bucket it
-        # stores its own state in) and must be set as a repo secret before the first
-        # run, or this fails with "bucket cannot be empty" - see README.
         run: |
           terraform init \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \

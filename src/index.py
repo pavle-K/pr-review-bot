@@ -59,10 +59,6 @@ def handler(event, context):
         if skip_reason:
             summary = f"## Summary\n_{skip_reason}_"
         else:
-            # Top-level guard around the AI review call specifically: a classified
-            # failure gets its exact reason; anything unclassified (timeout,
-            # malformed response, anything unforeseen) still degrades to a comment
-            # instead of crashing the invocation - static checks always post either way.
             try:
                 summary = review_diff(files, pr_title, pr.get("body") or "", repo_full_name, pr_number)
             except ReviewUnavailable as e:

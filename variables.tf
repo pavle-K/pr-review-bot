@@ -16,8 +16,7 @@ variable "github_token" {
   sensitive   = true
 }
 
-# Only one LLM provider needs to be set; the Lambda auto-selects based on which key
-# is present (Anthropic takes precedence if both are). Leave the other blank.
+# Only one LLM provider needs to be set; Anthropic takes precedence if both are.
 
 variable "anthropic_api_key" {
   description = "Anthropic API key for the LLM review summary. Leave blank to use OpenRouter instead."
@@ -45,9 +44,8 @@ variable "openrouter_model" {
   default     = "deepseek/deepseek-chat"
 }
 
-# Volume/abuse guardrail thresholds - string-typed (not number) so an unset CI secret
-# resolves to an empty string that coalesces cleanly to the default in lambda.tf,
-# rather than a hard type-conversion failure on an empty number.
+# String-typed, not number: an unset CI secret is "", which coalesces cleanly in
+# lambda.tf but would fail to convert to a number.
 
 variable "daily_call_limit" {
   description = "Max LLM review calls allowed per day, globally"

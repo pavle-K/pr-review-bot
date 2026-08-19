@@ -37,11 +37,9 @@ resource "aws_lambda_function" "webhook" {
 
   environment {
     variables = {
-      WEBHOOK_SECRET    = var.webhook_secret
-      GITHUB_TOKEN      = var.github_token
-      ANTHROPIC_API_KEY = var.anthropic_api_key
-      # CI supplies these via a secret that may be unset (empty string, not
-      # absent) - coalesce back to the real default rather than passing "".
+      WEBHOOK_SECRET     = var.webhook_secret
+      GITHUB_TOKEN       = var.github_token
+      ANTHROPIC_API_KEY  = var.anthropic_api_key
       ANTHROPIC_MODEL    = var.anthropic_model != "" ? var.anthropic_model : "claude-haiku-4-5"
       OPENROUTER_API_KEY = var.openrouter_api_key
       OPENROUTER_MODEL   = var.openrouter_model != "" ? var.openrouter_model : "deepseek/deepseek-chat"

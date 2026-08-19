@@ -5,10 +5,8 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import ClientError
 
-# Volume/abuse guardrails for the LLM review step only - static checks always run
-# regardless. Every threshold lives here so tuning never means hunting through logic;
-# each is env-overridable (wired from Terraform vars) so tuning doesn't require a code
-# change either, just a redeploy with a new value.
+# Guardrails for the LLM review step only - static checks always run regardless.
+# Thresholds are env-overridable (wired from Terraform vars), no code change needed.
 DAILY_CALL_LIMIT = int(os.environ.get("DAILY_CALL_LIMIT", "50"))
 PER_REPO_HOURLY_LIMIT = int(os.environ.get("PER_REPO_HOURLY_LIMIT", "10"))
 DEBOUNCE_WINDOW_SECONDS = int(os.environ.get("DEBOUNCE_WINDOW_SECONDS", "120"))
@@ -28,19 +26,14 @@ _dynamodb = boto3.client("dynamodb")
 
 
 def _daily_limit_message() -> str:
-    """The daily counter is keyed by UTC date, so it resets at the next UTC
-    midnight - compute that instead of hardcoding a vague 'tomorrow'."""
     tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
     reset_at = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
     return f"AI review skipped: daily review budget reached, resets {reset_at.strftime('%Y-%m-%d %H:%M UTC')}."
 
 
 def reviews_enabled() -> bool:
-    """Kill switch, checked before anything else - including before the budget
-    transaction, so a disabled bot never touches DynamoDB at all. Fails open (missing
-    flag item = enabled) so a fresh deploy isn't silently disabled, and fails open on
-    infra errors too, since a broken guardrail check must never block static checks
-    from posting - it only ever gates the optional LLM step."""
+    """Kill switch. Fails open on a missing flag or a DynamoDB error - never blocks
+    static checks, it only gates the optional LLM step."""
     try:
         resp = _dynamodb.get_item(TableName=TABLE_NAME, Key={"pk": {"S": KILL_SWITCH_PK}})
     except ClientError:
@@ -52,11 +45,8 @@ def reviews_enabled() -> bool:
 
 
 def claim_review_slot(repo_full_name: str, pr_number: int, commit_sha: str):
-    """Atomically check AND reserve budget for one LLM call - daily global cap,
-    per-repo hourly cap, and per-PR debounce - in a single DynamoDB transaction, so
-    concurrent webhook deliveries can't race past a limit, and budget is only ever
-    spent on calls that actually proceed. Returns None if the call may proceed
-    (state is now claimed); returns a human-readable skip reason otherwise."""
+    """Atomically checks + reserves daily cap, per-repo hourly cap, and per-PR
+    debounce in one transaction. Returns None if allowed, else a skip reason."""
     now = time.time()
     date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
@@ -66,8 +56,7 @@ def claim_review_slot(repo_full_name: str, pr_number: int, commit_sha: str):
     pr_pk = f"pr#{repo_full_name}#{pr_number}"
     cutoff = now - DEBOUNCE_WINDOW_SECONDS
 
-    # Order matters: this list's index lines up with `reasons` below to identify
-    # which guardrail blocked the call from DynamoDB's CancellationReasons.
+    # Index order must match `labels` below (maps to DynamoDB's CancellationReasons).
     try:
         _dynamodb.transact_write_items(
             TransactItems=[

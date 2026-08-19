@@ -28,8 +28,7 @@ def _is_source_file(filename: str) -> bool:
 
 
 def _requires_test(filename: str) -> bool:
-    """Source file that could plausibly have a test, excluding build config,
-    type declarations, and bare app entrypoints that are never unit-tested."""
+    """Excludes build config, type declarations, and bare app entrypoints."""
     if not _is_source_file(filename):
         return False
     lower = filename.lower()
@@ -57,8 +56,7 @@ def check_secrets(files: list) -> dict:
 
 
 def check_tests(files: list) -> dict:
-    """PR-level, not file-level: passes if any test file was touched anywhere in the
-    PR, regardless of whether it maps 1:1 to a specific changed source file."""
+    """PR-level: passes if any test file was touched anywhere in the PR."""
     source_touched = [f["filename"] for f in files if _requires_test(f["filename"])]
     test_touched = [f["filename"] for f in files if _is_test_file(f["filename"])]
     if not source_touched:
@@ -71,8 +69,6 @@ def check_tests(files: list) -> dict:
 
 
 def check_diff_size(files: list) -> dict:
-    # Expected to fire on initial scaffold/import commits (large by nature); that's
-    # fine, it's a nudge for ongoing PRs, not a hard gate on this one.
     total_changes = sum(f.get("changes", 0) for f in files)
     passed = total_changes <= LARGE_DIFF_THRESHOLD
     detail = (

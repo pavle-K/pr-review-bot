@@ -4,37 +4,30 @@ import re
 import urllib.error
 import urllib.request
 
-# No tokenizer available (stdlib only) - a flat chars-per-token ratio is a rough but
-# workable estimate for packing decisions; it doesn't need to be exact, just consistent.
+# No tokenizer available (stdlib only) - rough chars/4 estimate for packing decisions.
 CHARS_PER_TOKEN = 4
 TOKEN_BUDGET = 15000
 MAX_OUTPUT_TOKENS = 900
 REQUEST_TIMEOUT = 15
-# Low, not zero: this is a factual diff-summary task, not creative writing, so
-# consistency across runs matters more than variety - but 0 risks degenerate/
-# repetitive output on some models. 0.2 favors literal, repeatable descriptions.
-TEMPERATURE = 0.2
+TEMPERATURE = 0.2  # low but not 0: consistent summaries without degenerate output
 
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5"
 OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-chat"
 
 AUTH_MESSAGE = "AI review unavailable: API key not configured."
 BILLING_MESSAGE = "AI review unavailable: account balance/quota issue. Static checks below are still valid."
-# Best-effort: providers don't all use the same status code for a billing/quota
-# problem (OpenRouter documents 402; Anthropic has historically used 400 with a
-# message about credit balance), so 400 responses are also keyword-sniffed rather
-# than assumed to be a plain bad request.
+# 400 is included since Anthropic doesn't always use 402 for low-balance errors.
 BILLING_KEYWORDS = ("credit balance", "insufficient", "billing", "quota", "payment")
 
 
 class ReviewUnavailable(Exception):
-    """A classified AI-review failure. `message` is the exact, PR-comment-safe text
-    to show - never raw error/exception text. `log_detail` is for CloudWatch only."""
+    """message: PR-comment-safe text. log_detail: CloudWatch only, never posted."""
 
     def __init__(self, message: str, log_detail: str = ""):
         self.message = message
         self.log_detail = log_detail
         super().__init__(message)
+
 
 LOCKFILE_NAMES = {
     "package-lock.json",
@@ -126,8 +119,7 @@ def _score_file(f: dict) -> float:
 
 
 def _select_files(files: list):
-    """Noise-filter, then greedily pack the highest-scoring files whole (never
-    mid-file) into the token budget. Returns (included_files, excluded_filenames)."""
+    """Noise-filter, then greedily pack highest-scoring files whole into the budget."""
     reviewable = [f for f in files if not _is_noise(f["filename"])]
     scoreable = [f for f in reviewable if f.get("patch")]
     excluded = [f["filename"] for f in reviewable if not f.get("patch")]
@@ -172,9 +164,7 @@ def _build_prompt(included: list, excluded: list, pr_title: str, pr_body: str) -
 
 
 def _classify_http_error(e: urllib.error.HTTPError):
-    """Returns a ReviewUnavailable for the failure modes we distinguish (auth, rate
-    limit, billing), or None if the error doesn't match one - callers re-raise the
-    original HTTPError as-is in that case, to be handled as an unexpected failure."""
+    """ReviewUnavailable for auth/rate-limit/billing, else None (caller re-raises)."""
     try:
         body = e.read().decode(errors="replace")
     except Exception:
@@ -258,7 +248,6 @@ def _call_openrouter(prompt: str) -> str:
 
 
 def _select_provider():
-    # First matching key wins; only one provider needs to be configured.
     if os.environ.get("ANTHROPIC_API_KEY"):
         return _call_anthropic
     if os.environ.get("OPENROUTER_API_KEY"):
@@ -267,14 +256,8 @@ def _select_provider():
 
 
 def review_diff(files: list, pr_title: str, pr_body: str, repo_full_name: str, pr_number: int):
-    """LLM review summary, or None if there's nothing reviewable in the diff at all
-    (not an error - just nothing to say). Raises ReviewUnavailable for a classified
-    failure (missing key, rate limit, billing) with a PR-comment-safe message; any
-    other exception (timeout, malformed response, etc.) propagates as-is and is the
-    caller's responsibility to turn into a generic "unexpected failure" message -
-    this function never silently swallows a real failure into a fake result.
-    repo_full_name/pr_number are only used for the cost-visibility log line, not sent
-    to the provider."""
+    """Returns None if there's nothing to review. Raises ReviewUnavailable for a
+    classified failure; anything else propagates for the caller to handle."""
     included, excluded = _select_files(files)
     if not included:
         if excluded:
