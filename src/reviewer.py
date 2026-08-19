@@ -10,6 +10,10 @@ CHARS_PER_TOKEN = 4
 TOKEN_BUDGET = 15000
 MAX_OUTPUT_TOKENS = 900
 REQUEST_TIMEOUT = 15
+# Low, not zero: this is a factual diff-summary task, not creative writing, so
+# consistency across runs matters more than variety - but 0 risks degenerate/
+# repetitive output on some models. 0.2 favors literal, repeatable descriptions.
+TEMPERATURE = 0.2
 
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5"
 OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-chat"
@@ -211,6 +215,7 @@ def _call_anthropic(prompt: str) -> str:
         {
             "model": model,
             "max_tokens": MAX_OUTPUT_TOKENS,
+            "temperature": TEMPERATURE,
             "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -234,6 +239,7 @@ def _call_openrouter(prompt: str) -> str:
         {
             "model": model,
             "max_tokens": MAX_OUTPUT_TOKENS,
+            "temperature": TEMPERATURE,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
