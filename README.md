@@ -19,19 +19,30 @@ GCP API Gateway, the Lambda's IAM role ~ a GCP service account.
 
 At this stage the bot verifies the webhook signature, fetches the PR's changed files,
 runs deterministic checks against them (possible committed secrets, source files
-changed with no corresponding test changes, oversized diffs), and sends the diff to an
-LLM for a plain-English summary, risk callouts, and a check on whether the diff matches
-the PR description. Both sections post as one comment. If the LLM call fails, times
-out, or no provider is configured, the summary section says so and the static checks
-still post — the webhook never fails outright because of the LLM.
+changed with no corresponding test changes, oversized diffs), and sends a
+relevance-ranked subset of the diff to an LLM for a plain-English summary, risk
+callouts, and a check on whether the diff matches the PR description. Both sections
+post as one comment. If the LLM call fails, times out, or no provider is configured,
+the summary section says so and the static checks still post; the webhook never fails
+outright because of the LLM.
 
-**LLM provider is picked automatically from whichever API key secret is set** — no
-code change needed to switch:
+**Diff selection, not truncation.** Large diffs aren't sent in file order until an
+arbitrary cutoff (that silently dropped whatever came after it, including real code) -
+each changed file is scored (path risk keywords like `auth`/`payment`/`migration`
+score highest, then churn, discounted for whitespace/import-only changes) and files are
+packed whole, highest-scoring first, into a fixed token budget. Lockfiles, `dist/`,
+`build/`, `node_modules/`, minified, and binary/image files are filtered out entirely
+before scoring. Any file that doesn't fit is named explicitly, both in the prompt (so
+the model never claims something is "missing" just because it wasn't shown) and in the
+final comment under "Not reviewed (diff too large for single pass)".
+
+**LLM provider is picked automatically from whichever API key secret is set**, no code
+change needed to switch:
 
 - `ANTHROPIC_API_KEY` set -> calls Claude directly (model: `ANTHROPIC_MODEL`, default
   `claude-haiku-4-5`)
 - otherwise, `OPENROUTER_API_KEY` set -> calls OpenRouter's OpenAI-compatible endpoint
-  (model: `OPENROUTER_MODEL`, default `deepseek/deepseek-chat`) — this is how you'd
+  (model: `OPENROUTER_MODEL`, default `deepseek/deepseek-chat`); this is how you'd
   point it at Mistral, Qwen, GLM, or any other OpenRouter-hosted model, just by setting
   `OPENROUTER_MODEL` to that model's OpenRouter ID
 - neither set -> the bot still posts, just without a summary section

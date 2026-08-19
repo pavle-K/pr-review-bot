@@ -1,41 +1,134 @@
 import json
 import os
+import re
 import urllib.request
 
-MAX_DIFF_CHARS = 15000
-MAX_OUTPUT_TOKENS = 700
+# No tokenizer available (stdlib only) - a flat chars-per-token ratio is a rough but
+# workable estimate for packing decisions; it doesn't need to be exact, just consistent.
+CHARS_PER_TOKEN = 4
+TOKEN_BUDGET = 15000
+MAX_OUTPUT_TOKENS = 800
 REQUEST_TIMEOUT = 15
 
 ANTHROPIC_MODEL_DEFAULT = "claude-haiku-4-5"
 OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-chat"
 
+LOCKFILE_NAMES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Gemfile.lock",
+    "composer.lock",
+    "Cargo.lock",
+}
+NOISE_DIR_RE = re.compile(r"(^|/)(dist|build|node_modules|vendor)/", re.I)
+MINIFIED_RE = re.compile(r"\.min\.(js|css)$", re.I)
+BINARY_EXT_RE = re.compile(
+    r"\.(png|jpe?g|gif|svg|ico|bmp|webp|pdf|woff2?|ttf|eot|otf"
+    r"|mp4|mov|avi|zip|gz|tar|7z|jar|class|so|dylib|dll|exe|wasm)$",
+    re.I,
+)
+
+RISK_KEYWORDS = (
+    "auth", "session", "payment", "migration", "middleware",
+    "security", "secret", ".env", "schema", "permission",
+)
+RISK_BONUS = 500
+
+WHITESPACE_ONLY_RE = re.compile(r"^\s*$")
+IMPORT_LINE_RE = re.compile(r"^\s*(import\s|from\s+\S+\s+import\s|require\()", re.I)
+
 SYSTEM_PROMPT = (
-    "You are reviewing a GitHub pull request diff. In under 200 words, cover: "
-    "(1) a plain-English summary of what changed, (2) any risks or edge cases worth "
-    "a human's attention, (3) whether the diff matches what the PR description "
-    "claims. Be specific to this diff; do not restate the file list."
+    "You are reviewing a GitHub pull request diff. You may be shown only a "
+    "relevance-ranked subset of the full diff, not every changed file - the request "
+    "will tell you exactly which files are included and which were excluded for size. "
+    "Never claim code is missing, absent, or unimplemented solely because a file "
+    "wasn't shown to you; only comment on files you actually see, and note explicitly "
+    "when a judgment can't be made because a relevant file was excluded. "
+    "Respond in under 250 words using exactly these markdown sections:\n"
+    "## Summary\n<plain-English summary of what changed, in the files you were shown>\n"
+    "## Risks & Edge Cases\n<risks or edge cases worth a human's attention>\n"
+    "## Alignment with PR Description\n<whether the diff matches what the PR description claims>"
 )
 
 
-def _diff_text(files: list) -> str:
-    parts = []
-    for f in files:
-        patch = f.get("patch")
-        if patch:
-            parts.append(f"--- {f['filename']} ---\n{patch}")
+def _is_noise(filename: str) -> bool:
+    basename = filename.rsplit("/", 1)[-1]
+    if basename in LOCKFILE_NAMES:
+        return True
+    if NOISE_DIR_RE.search(filename):
+        return True
+    if MINIFIED_RE.search(filename):
+        return True
+    if BINARY_EXT_RE.search(filename):
+        return True
+    return False
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def _non_cosmetic_ratio(patch: str) -> float:
+    changed = [
+        line[1:]
+        for line in patch.splitlines()
+        if (line.startswith("+") or line.startswith("-")) and not line.startswith(("+++", "---"))
+    ]
+    if not changed:
+        return 0.0
+    cosmetic = sum(1 for line in changed if WHITESPACE_ONLY_RE.match(line) or IMPORT_LINE_RE.match(line))
+    return 1 - (cosmetic / len(changed))
+
+
+def _score_file(f: dict) -> float:
+    lower = f["filename"].lower()
+    risk = RISK_BONUS if any(k in lower for k in RISK_KEYWORDS) else 0
+    churn = f.get("changes", 0)
+    ratio = _non_cosmetic_ratio(f["patch"])
+    return risk + churn * ratio
+
+
+def _select_files(files: list):
+    """Noise-filter, then greedily pack the highest-scoring files whole (never
+    mid-file) into the token budget. Returns (included_files, excluded_filenames)."""
+    reviewable = [f for f in files if not _is_noise(f["filename"])]
+    scoreable = [f for f in reviewable if f.get("patch")]
+    excluded = [f["filename"] for f in reviewable if not f.get("patch")]
+
+    scored = sorted(scoreable, key=lambda f: (-_score_file(f), f["filename"]))
+
+    included = []
+    budget_left = TOKEN_BUDGET
+    for f in scored:
+        hunk_tokens = _estimate_tokens(f["patch"])
+        if hunk_tokens <= budget_left:
+            included.append(f)
+            budget_left -= hunk_tokens
         else:
-            parts.append(f"--- {f['filename']} --- (no diff shown: binary or too large)")
-    text = "\n\n".join(parts)
-    if len(text) > MAX_DIFF_CHARS:
-        text = text[:MAX_DIFF_CHARS] + "\n\n[diff truncated for length]"
-    return text
+            excluded.append(f["filename"])
+    return included, excluded
 
 
-def _build_prompt(files: list, pr_title: str, pr_body: str) -> str:
+def _build_prompt(included: list, excluded: list, pr_title: str, pr_body: str) -> str:
+    included_names = ", ".join(f["filename"] for f in included)
+    total = len(included) + len(excluded)
+    excluded_note = (
+        f"\nFiles NOT shown (excluded for size - do not describe these as missing or "
+        f"unimplemented, just as not reviewed): {', '.join(excluded)}"
+        if excluded
+        else ""
+    )
+    diff_text = "\n\n".join(f"--- {f['filename']} ---\n{f['patch']}" for f in included)
     return (
         f"PR title: {pr_title}\n"
         f"PR description: {pr_body or '(none)'}\n\n"
-        f"Diff:\n{_diff_text(files)}"
+        f"You are shown a relevance-ranked subset of this PR's changed files "
+        f"({len(included)} of {total} changed files), selected by risk and churn, "
+        f"not the full diff.\n"
+        f"Files shown: {included_names}{excluded_note}\n\n"
+        f"Diff:\n{diff_text}"
     )
 
 
@@ -102,13 +195,28 @@ def _select_provider():
 
 
 def review_diff(files: list, pr_title: str, pr_body: str):
-    """LLM review summary, or None if no provider is configured or the call fails.
-    Callers must treat None as 'omit the summary section', never as fatal."""
+    """LLM review summary, or None if there's nothing reviewable, no provider is
+    configured, or the call fails. Callers must treat None as 'omit the summary
+    section', never as fatal."""
+    included, excluded = _select_files(files)
+    if not included:
+        if excluded:
+            return (
+                "## Summary\nNo reviewable source changes in this diff "
+                "(only lockfiles, build artifacts, or binaries changed)."
+            )
+        return None
+
     call = _select_provider()
     if call is None:
         return None
-    prompt = _build_prompt(files, pr_title, pr_body)
+
+    prompt = _build_prompt(included, excluded, pr_title, pr_body)
     try:
-        return call(prompt).strip()
+        text = call(prompt).strip()
     except (OSError, ValueError, KeyError, IndexError):
         return None
+
+    if excluded:
+        text += "\n\n**Not reviewed (diff too large for single pass):** " + ", ".join(excluded)
+    return text

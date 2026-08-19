@@ -44,8 +44,11 @@ def handler(event, context):
     results = run_checks(files)
     summary = review_diff(files, pr_title, pr.get("body") or "")
 
-    lines = [f"PR Review Bot: review for #{pr_number} ({pr_title})", "", "## Summary"]
-    lines.append(summary or "_LLM summary unavailable (no provider configured, or the request failed)._")
+    lines = [f"PR Review Bot: review for #{pr_number} ({pr_title})", ""]
+    lines.append(
+        summary
+        or "## Summary\n_LLM summary unavailable (no provider configured, or the request failed)._"
+    )
     lines.append("")
     lines.append(format_checklist(results))
     post_comment(repo_full_name, pr_number, "\n".join(lines))
